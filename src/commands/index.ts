@@ -208,7 +208,7 @@ export function registerCommands(context: vscode.ExtensionContext, deps: Command
     await manager.refreshProfiles();
     void vscode.window.showInformationMessage(
       enable
-        ? `SSH Explorer: sudo mode enabled for ${profile.name}. Operations denied by the server are retried as root.`
+        ? `SSH Explorer: sudo mode enabled for ${profile.name}. Operations denied by the server are now retried as root (no reconnect needed).`
         : `SSH Explorer: sudo mode disabled for ${profile.name}.`,
     );
   });

@@ -95,11 +95,13 @@ export class Connection implements IDisposable {
   readonly onDidChangeState: Event<StateChange> = this.stateEmitter.event;
   /** Runs commands as root over this connection (used when profile.sudo is enabled). */
   readonly sudo: SudoRunner;
+  private currentProfile: ConnectionProfile;
 
   constructor(
-    readonly profile: ConnectionProfile,
+    profile: ConnectionProfile,
     private readonly deps: ConnectionDeps,
   ) {
+    this.currentProfile = profile;
     this.log = new Logger(`conn:${profile.name}`);
     this.semaphore = new Semaphore(deps.settings().maxConcurrentOps);
     this.sudo = new SudoRunner(this, {
@@ -108,6 +110,23 @@ export class Connection implements IDisposable {
       saveSecretsPolicy: () => deps.saveSecretsPolicy(),
       command: () => deps.sudoCommand(),
     });
+  }
+
+  /** Current profile. Settings changes (e.g. sudo mode) are applied live via updateProfile. */
+  get profile(): ConnectionProfile {
+    return this.currentProfile;
+  }
+
+  /**
+   * Replaces the profile without touching the transport. Flags such as `sudo`
+   * take effect immediately; transport fields (host, user, keys…) are re-read
+   * on the next (re)connection, which callers trigger explicitly when needed.
+   */
+  updateProfile(next: ConnectionProfile): void {
+    const previous = this.currentProfile;
+    this.currentProfile = next;
+    if (previous.sudo !== next.sudo) this.log.info(`sudo mode ${next.sudo ? 'enabled' : 'disabled'}`);
+    else this.log.debug('Profile updated');
   }
 
   get name(): string {

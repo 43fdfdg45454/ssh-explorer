@@ -60,6 +60,7 @@ Orden de intentos: **agente SSH → ficheros de identidad → contraseña → ke
 
 SFTP trabaja con los permisos del usuario con el que te conectas. Si necesitas editar archivos de root (por ejemplo `/srv/webserver/docker-compose.yml` o `/etc/...`), activa el modo sudo en la conexión: clic derecho → **Toggle Sudo Mode**, o `"sudo": true` en el perfil. Con él, cualquier operación que el servidor rechace con _Permission denied_ se reintenta como root mediante `sudo` en un canal `exec` de la misma sesión SSH:
 
+- El cambio aplica al instante sobre la conexión abierta; no hace falta reconectar ni reiniciar.
 - Lectura y listado siguen por SFTP; solo lo denegado pasa por `sudo` (`cat`, `stat`, `find`, `cp`, `mkdir`, `rm`, `mv`).
 - Al guardar, el contenido se sube por SFTP a un temporal en tu home y `sudo cp` lo vuelca sobre el destino, así el archivo conserva dueño y permisos.
 - Se intenta primero `sudo -n` (sin contraseña, `NOPASSWD`). Si sudo pide contraseña, se solicita una vez y se recuerda en memoria; `sshExplorer.auth.saveSecrets` decide si se guarda en el almacén de secretos.

@@ -21,6 +21,8 @@ let provider: SshFileSystemProvider;
 let prompts: ReturnType<typeof createHarness>['prompts'];
 const uri = (p: string) => buildSshUri('test', p);
 
+let currentProfile: ReturnType<typeof createHarness>['profile'];
+
 async function setup(serverEnv: NodeJS.ProcessEnv, harness: Partial<HarnessOptions> = {}) {
   const fake = installFakeSudo();
   sudoDir = fake.dir;
@@ -42,7 +44,8 @@ async function setup(serverEnv: NodeJS.ProcessEnv, harness: Partial<HarnessOptio
     ...harness,
   });
   prompts = h.prompts;
-  manager = new ConnectionManager({ loadProfiles: async () => [h.profile] }, h.deps, {
+  currentProfile = h.profile;
+  manager = new ConnectionManager({ loadProfiles: async () => [currentProfile] }, h.deps, {
     networkWatchIntervalMs: 0,
   });
   await manager.refreshProfiles();
@@ -157,7 +160,17 @@ describe('sudo mode', () => {
     });
   });
 
-  it('keeps reporting NoPermissions when sudo mode is off', async () => {
+  it('keeps reporting NoPermissions (with a hint) when sudo mode is off', async () => {
+    await setup({ FAKE_SUDO_NOPASSWD: '1' }, { sudo: false });
+    const error = await provider
+      .writeFile(uri('/protected/docker-compose.yml'), enc.encode('a\n'), { create: false, overwrite: true })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'NoPermissions' });
+    expect((error as Error).message).toContain('enable Sudo Mode');
+    expect(fakeSudoLog(sudoDir)).toEqual([]);
+  });
+
+  it('applies sudo mode to an already open connection when profiles are refreshed', async () => {
     await setup({ FAKE_SUDO_NOPASSWD: '1' }, { sudo: false });
     await expect(
       provider.writeFile(uri('/protected/docker-compose.yml'), enc.encode('a\n'), {
@@ -165,7 +178,19 @@ describe('sudo mode', () => {
         overwrite: true,
       }),
     ).rejects.toMatchObject({ code: 'NoPermissions' });
-    expect(fakeSudoLog(sudoDir)).toEqual([]);
+    expect(manager.get('test')?.state).toBe('connected');
+
+    // Simulates "Toggle Sudo Mode": the settings change, profiles are reloaded, no reconnect.
+    currentProfile = { ...currentProfile, sudo: true };
+    await manager.refreshProfiles();
+    expect(manager.get('test')?.profile.sudo).toBe(true);
+
+    await provider.writeFile(uri('/protected/docker-compose.yml'), enc.encode('b\n'), {
+      create: false,
+      overwrite: true,
+    });
+    expect(await fs.readFile(path.join(server.root, 'protected/docker-compose.yml'), 'utf8')).toBe('b\n');
+    expect(server.authCount).toBe(1);
   });
 });
 

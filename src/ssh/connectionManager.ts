@@ -47,13 +47,19 @@ export class ConnectionManager implements IDisposable {
     }
   }
 
-  /** Reloads profiles from settings and ssh_config. Existing connections keep running. */
+  /**
+   * Reloads profiles from settings and ssh_config. Existing connections keep
+   * running and receive their updated profile so flags like sudo apply at once.
+   */
   async refreshProfiles(): Promise<void> {
     const list = await this.profileSource.loadProfiles();
     this.profiles = new Map(list.map((p) => [p.name.toLowerCase(), p]));
-    // Drop connections whose profile disappeared (only when idle).
     for (const [key, conn] of this.connections) {
-      if (!this.profiles.has(key) && conn.state === 'disconnected') {
+      const updated = this.profiles.get(key);
+      if (updated) {
+        conn.updateProfile(updated);
+      } else if (conn.state === 'disconnected') {
+        // Profile disappeared and the connection is idle: drop it.
         conn.dispose();
         this.connections.delete(key);
       }

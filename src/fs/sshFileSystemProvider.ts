@@ -134,11 +134,18 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
       return await viaSftp();
     } catch (err) {
       const { conn, path } = this.connection(uri);
-      if (!conn.profile.sudo || !isPermissionDenied(err)) throw err;
-      log.debug(`${uri.toString()}: permission denied over SFTP; retrying with sudo`);
+      if (!isPermissionDenied(err)) throw err;
+      if (!conn.profile.sudo) {
+        log.info(`${uri.toString()}: permission denied over SFTP and sudo mode is off for ${conn.name}`);
+        throw vscode.FileSystemError.NoPermissions(
+          `${uri.toString()} — enable Sudo Mode on connection "${conn.name}" to work on files owned by root`,
+        );
+      }
+      log.info(`${uri.toString()}: permission denied over SFTP; retrying as root with sudo`);
       try {
         return await viaSudo(conn.sudo, conn, path);
       } catch (sudoErr) {
+        log.warn(`${uri.toString()}: sudo fallback failed: ${errorMessage(sudoErr)}`);
         if (sudoErr instanceof vscode.FileSystemError) throw sudoErr;
         if (sudoErr instanceof SudoError || sudoErr instanceof CancelledError) {
           throw vscode.FileSystemError.NoPermissions(`${uri.toString()} (sudo: ${sudoErr.message})`);

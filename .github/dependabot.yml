@@ -11,6 +11,15 @@ updates:
         dependency-type: production
     commit-message:
       prefix: 'build(deps)'
+    ignore:
+      # Pinned to the minimum supported VS Code API; bumping it would silently
+      # allow newer APIs than engines.vscode permits.
+      - dependency-name: '@types/vscode'
+      # Node 22 extension host / TypeScript 7 not yet supported by typescript-eslint.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:

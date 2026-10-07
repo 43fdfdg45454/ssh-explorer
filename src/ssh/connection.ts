@@ -18,6 +18,7 @@ import { ConnectionUnavailableError, classifyError, isTransportError } from './e
 import { createHostVerifier, type HostKeyPolicy, type HostKeyPrompter } from './hostVerifier';
 import type { KnownHosts } from './knownHosts';
 import { openJumpChain, type JumpChain } from './proxyJump';
+import { SudoRunner, type SudoPrompter } from './sudo';
 import type { ConnectionProfile, ConnectionSettings, ConnectionState, ResolvedHost } from './types';
 
 export interface ConnectionDeps {
@@ -33,12 +34,31 @@ export interface ConnectionDeps {
   secrets?: SecretStore;
   saveSecretsPolicy(): SaveSecretsPolicy;
   settings(): ConnectionSettings;
+  sudoPrompter: SudoPrompter;
+  /** Privilege escalation binary (normally `sudo`). */
+  sudoCommand(): string;
 }
 
 export interface StateChange {
   state: ConnectionState;
   previous: ConnectionState;
   error?: Error;
+}
+
+export interface ExecOptions {
+  /** Bytes written to the command's stdin before it is closed. */
+  stdin?: Buffer;
+  timeoutMs?: number;
+  /** Abort if stdout grows beyond this many bytes (default 256 MiB). */
+  maxOutputBytes?: number;
+}
+
+export interface ExecResult {
+  stdout: Buffer;
+  stderr: string;
+  /** Exit code, or null when the command was killed by a signal. */
+  code: number | null;
+  signal?: string;
 }
 
 export interface WithSftpOptions {
@@ -73,6 +93,8 @@ export class Connection implements IDisposable {
 
   lastError: Error | undefined;
   readonly onDidChangeState: Event<StateChange> = this.stateEmitter.event;
+  /** Runs commands as root over this connection (used when profile.sudo is enabled). */
+  readonly sudo: SudoRunner;
 
   constructor(
     readonly profile: ConnectionProfile,
@@ -80,6 +102,12 @@ export class Connection implements IDisposable {
   ) {
     this.log = new Logger(`conn:${profile.name}`);
     this.semaphore = new Semaphore(deps.settings().maxConcurrentOps);
+    this.sudo = new SudoRunner(this, {
+      prompter: deps.sudoPrompter,
+      secrets: deps.secrets,
+      saveSecretsPolicy: () => deps.saveSecretsPolicy(),
+      command: () => deps.sudoCommand(),
+    });
   }
 
   get name(): string {
@@ -205,6 +233,69 @@ export class Connection implements IDisposable {
         this.touch();
         return result;
       }
+    });
+  }
+
+  /**
+   * Runs a command on the remote host over an exec channel of this SSH session
+   * (same connection the SFTP channel uses; no new authentication). Waits for
+   * (re)connection like getSftp and counts against the concurrency limit.
+   */
+  async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
+    return this.semaphore.run(async () => {
+      await this.getSftp(options.timeoutMs);
+      const client = this.client;
+      if (!client) throw new ConnectionUnavailableError('Not connected', this.name);
+      return withTimeout(
+        new Promise<ExecResult>((resolve, reject) => {
+          client.exec(command, (err, channel) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            const out: Buffer[] = [];
+            const errChunks: Buffer[] = [];
+            let outBytes = 0;
+            const limit = options.maxOutputBytes ?? 256 * 1024 * 1024;
+            let code: number | null = null;
+            let signal: string | undefined;
+            let settled = false;
+            const finish = (error?: Error) => {
+              if (settled) return;
+              settled = true;
+              if (error) reject(error);
+              else {
+                resolve({
+                  stdout: Buffer.concat(out),
+                  stderr: Buffer.concat(errChunks).toString('utf8'),
+                  code,
+                  signal,
+                });
+              }
+            };
+            channel.on('data', (chunk: Buffer) => {
+              outBytes += chunk.length;
+              if (outBytes > limit) {
+                channel.close();
+                finish(new Error(`Command output exceeded ${limit} bytes`));
+                return;
+              }
+              out.push(chunk);
+            });
+            channel.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk));
+            channel.on('exit', (c: number | null, sig?: string) => {
+              code = c;
+              signal = sig;
+            });
+            channel.on('close', () => finish());
+            channel.on('error', (e: Error) => finish(e));
+            if (options.stdin && options.stdin.length > 0) channel.end(options.stdin);
+            else channel.end();
+          });
+        }),
+        options.timeoutMs ?? this.deps.settings().operationTimeoutMs,
+        `Remote command timed out: ${command.slice(0, 80)}`,
+      );
     });
   }
 

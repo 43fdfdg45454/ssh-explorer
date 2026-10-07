@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { buildSshUri, remoteDirname, remoteJoin } from '../fs/uri';
 import type { Connection } from '../ssh/connection';
 import * as ops from '../fs/sftpOps';
+import * as sudoOps from '../fs/sudoOps';
+import { sftpStatus, SFTP_STATUS } from '../ssh/errors';
 import { errorMessage } from '../util/logger';
 
 interface EntryItem extends vscode.QuickPickItem {
@@ -16,6 +18,35 @@ export interface BrowseResult {
 
 const S_IFDIR = 0o040000;
 const S_IFMT = 0o170000;
+
+/** Lists `dir` as [name, isDirectory]; falls back to sudo when the profile allows it. */
+async function listDirectory(conn: Connection, dir: string): Promise<[string, boolean][]> {
+  try {
+    return await conn.withSftp(
+      async (sftp) => {
+        const out: [string, boolean][] = [];
+        for (const e of await ops.readdir(sftp, dir)) {
+          if (e.filename === '.' || e.filename === '..') continue;
+          let isDir = (e.attrs.mode & S_IFMT) === S_IFDIR;
+          if ((e.attrs.mode & S_IFMT) === 0o120000) {
+            try {
+              isDir = ((await ops.stat(sftp, remoteJoin(dir, e.filename))).mode & S_IFMT) === S_IFDIR;
+            } catch {
+              // dangling link
+            }
+          }
+          out.push([e.filename, isDir]);
+        }
+        return out;
+      },
+      { idempotent: true },
+    );
+  } catch (err) {
+    if (!conn.profile.sudo || sftpStatus(err) !== SFTP_STATUS.PERMISSION_DENIED) throw err;
+    const entries = await sudoOps.readdir(conn.sudo, buildSshUri(conn.name, dir), dir);
+    return entries.map(([name, type]) => [name, (type & vscode.FileType.Directory) !== 0]);
+  }
+}
 
 /**
  * Keyboard-driven remote directory navigator built on QuickPick. Returns the
@@ -36,7 +67,7 @@ export async function browseRemote(
     qp.busy = true;
     qp.placeholder = dir;
     try {
-      const entries = await conn.withSftp((sftp) => ops.readdir(sftp, dir), { idempotent: true });
+      const entries = await listDirectory(conn, dir);
       const items: EntryItem[] = [];
       if (mode !== 'file') {
         items.push({
@@ -52,22 +83,10 @@ export async function browseRemote(
       }
       const dirs: EntryItem[] = [];
       const files: EntryItem[] = [];
-      for (const e of entries) {
-        if (e.filename === '.' || e.filename === '..') continue;
-        let isDir = (e.attrs.mode & S_IFMT) === S_IFDIR;
-        if ((e.attrs.mode & S_IFMT) === 0o120000) {
-          try {
-            const st = await conn.withSftp((sftp) => ops.stat(sftp, remoteJoin(dir, e.filename)), {
-              idempotent: true,
-            });
-            isDir = (st.mode & S_IFMT) === S_IFDIR;
-          } catch {
-            // dangling link
-          }
-        }
-        const full = remoteJoin(dir, e.filename);
-        if (isDir) dirs.push({ entry: 'dir', path: full, label: `$(folder) ${e.filename}` });
-        else if (mode !== 'folder') files.push({ entry: 'file', path: full, label: `$(file) ${e.filename}` });
+      for (const [name, isDir] of entries) {
+        const full = remoteJoin(dir, name);
+        if (isDir) dirs.push({ entry: 'dir', path: full, label: `$(folder) ${name}` });
+        else if (mode !== 'folder') files.push({ entry: 'file', path: full, label: `$(file) ${name}` });
       }
       const sortByLabel = (a: EntryItem, b: EntryItem) => a.label.localeCompare(b.label);
       qp.items = [...items, ...dirs.sort(sortByLabel), ...files.sort(sortByLabel)];

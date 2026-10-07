@@ -12,7 +12,7 @@ import { ConnectionManager } from './ssh/connectionManager';
 import { KnownHosts } from './ssh/knownHosts';
 import { SshConfigLoader } from './ssh/sshConfigLoader';
 import { ConnectionsTreeProvider } from './ui/connectionsTreeProvider';
-import { VsCodeAuthPrompter, VsCodeHostKeyPrompter } from './ui/prompts';
+import { VsCodeAuthPrompter, VsCodeHostKeyPrompter, VsCodeSudoPrompter } from './ui/prompts';
 import { VsCodeSecretStore } from './ui/secrets';
 import { StatusBar } from './ui/statusBar';
 import { Logger, setLogSink } from './util/logger';
@@ -57,6 +57,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     secrets,
     saveSecretsPolicy: () => settings.saveSecrets(),
     settings: () => settings.connectionSettings(),
+    sudoPrompter: new VsCodeSudoPrompter(),
+    sudoCommand: () => settings.sudoCommand(),
   };
 
   const profiles = new SettingsAndSshConfigProfiles(settings, sshConfig);

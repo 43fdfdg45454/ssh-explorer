@@ -20,6 +20,7 @@ export interface ConnectionSetting {
   agentForward?: boolean;
   proxyJump?: string;
   keepaliveInterval?: number;
+  sudo?: boolean;
 }
 
 /** Typed, lazily-read access to the extension's configuration. */
@@ -49,6 +50,7 @@ export class Settings {
         agentForward: c.agentForward,
         proxyJump: c.proxyJump || undefined,
         keepaliveInterval: typeof c.keepaliveInterval === 'number' ? c.keepaliveInterval : undefined,
+        sudo: c.sudo === true,
         source: 'settings',
       });
     }
@@ -93,6 +95,10 @@ export class Settings {
 
   agentSocket(): string | undefined {
     return this.cfg.get<string>('agent.socket', '') || undefined;
+  }
+
+  sudoCommand(): string {
+    return this.cfg.get<string>('sudo.command', '') || 'sudo';
   }
 
   saveSecrets(): SaveSecretsPolicy {

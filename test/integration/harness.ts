@@ -53,6 +53,8 @@ export interface HarnessOptions {
   knownHostsText?: string;
   settings?: Partial<ConnectionSettings>;
   user?: string;
+  sudo?: boolean;
+  sudoPasswords?: string[];
 }
 
 export interface Harness {
@@ -60,13 +62,21 @@ export interface Harness {
   profile: ConnectionProfile;
   knownHosts: KnownHosts;
   knownHostsFile: string;
-  prompts: { passphrase: number; password: number; keyboard: number; unknownHost: number; save: number };
+  prompts: {
+    passphrase: number;
+    password: number;
+    keyboard: number;
+    unknownHost: number;
+    save: number;
+    sudo: number;
+  };
   secrets: Map<string, string>;
 }
 
 /** Wires Connection dependencies against a test server with scripted prompts. */
 export function createHarness(server: SftpTestServer, o: HarnessOptions = {}): Harness {
-  const prompts = { passphrase: 0, password: 0, keyboard: 0, unknownHost: 0, save: 0 };
+  const prompts = { passphrase: 0, password: 0, keyboard: 0, unknownHost: 0, save: 0, sudo: 0 };
+  const sudoPasswords = [...(o.sudoPasswords ?? [])];
   const passwords = [...(o.passwords ?? [])];
   const keyboardAnswers = [...(o.keyboardAnswers ?? [])];
   const secrets = new Map<string, string>();
@@ -82,6 +92,7 @@ export function createHarness(server: SftpTestServer, o: HarnessOptions = {}): H
     user: o.user ?? 'tester',
     identityFile: o.identityFiles ?? [],
     agent: o.agentSocket ?? false,
+    sudo: o.sudo,
     source: 'settings',
   };
 
@@ -134,6 +145,14 @@ export function createHarness(server: SftpTestServer, o: HarnessOptions = {}): H
     },
     saveSecretsPolicy: () => 'never',
     settings: () => ({ ...FAST_SETTINGS, ...o.settings }),
+    sudoPrompter: {
+      askSudoPassword: async () => {
+        prompts.sudo++;
+        return sudoPasswords.shift();
+      },
+      askSaveSudoPassword: async () => false,
+    },
+    sudoCommand: () => 'sudo',
   };
   return { deps, profile, knownHosts, knownHostsFile, prompts, secrets };
 }

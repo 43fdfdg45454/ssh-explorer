@@ -140,6 +140,11 @@
         "category": "SSH Explorer"
       },
       {
+        "command": "sshExplorer.toggleSudo",
+        "title": "Toggle Sudo Mode",
+        "category": "SSH Explorer"
+      },
+      {
         "command": "sshExplorer.diagnoseAgent",
         "title": "Diagnose SSH Agent",
         "category": "SSH Explorer"
@@ -254,6 +259,11 @@
           "command": "sshExplorer.copyUri",
           "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
           "group": "3_edit@3"
+        },
+        {
+          "command": "sshExplorer.toggleSudo",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "3_edit@4"
         }
       ],
       "commandPalette": [
@@ -332,6 +342,11 @@
               "keepaliveInterval": {
                 "type": "integer",
                 "description": "Keepalive interval in milliseconds for this host."
+              },
+              "sudo": {
+                "type": "boolean",
+                "default": false,
+                "markdownDescription": "Retry operations the server refuses with *Permission denied* as root via `sudo` over an exec channel of the same SSH session. Requires sudo and GNU coreutils on the server."
               }
             }
           }
@@ -411,6 +426,11 @@
           ],
           "default": "ask",
           "description": "Whether passwords and passphrases that worked are stored in the editor's secret storage."
+        },
+        "sshExplorer.sudo.command": {
+          "type": "string",
+          "default": "sudo",
+          "description": "Privilege escalation command used by sudo mode. Must accept -n, -S, -p and --."
         },
         "sshExplorer.keepaliveIntervalSeconds": {
           "type": "number",

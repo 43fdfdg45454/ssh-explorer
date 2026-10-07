@@ -46,7 +46,8 @@ Lo más sencillo es definir los hosts en `~/.ssh/config`; la extensión los lee 
     "port": 22,
     "root": "/var/www",            // vacío = directorio home remoto
     "identityFile": ["~/.ssh/id_ed25519"],
-    "proxyJump": "bastion"         // alias de ~/.ssh/config o user@host:port
+    "proxyJump": "bastion",        // alias de ~/.ssh/config o user@host:port
+    "sudo": true                   // reintentar como root lo que SFTP deniegue
   }
 ]
 ```
@@ -54,6 +55,17 @@ Lo más sencillo es definir los hosts en `~/.ssh/config`; la extensión los lee 
 ### Autenticación
 
 Orden de intentos: **agente SSH → ficheros de identidad → contraseña → keyboard-interactive**. Las credenciales que funcionaron se recuerdan en memoria, de modo que las reconexiones automáticas no vuelven a preguntar. `sshExplorer.auth.saveSecrets` controla si contraseñas y _passphrases_ se guardan en el almacén de secretos del editor.
+
+### Modo sudo (archivos de root)
+
+SFTP trabaja con los permisos del usuario con el que te conectas. Si necesitas editar archivos de root (por ejemplo `/srv/webserver/docker-compose.yml` o `/etc/...`), activa el modo sudo en la conexión: clic derecho → **Toggle Sudo Mode**, o `"sudo": true` en el perfil. Con él, cualquier operación que el servidor rechace con _Permission denied_ se reintenta como root mediante `sudo` en un canal `exec` de la misma sesión SSH:
+
+- Lectura y listado siguen por SFTP; solo lo denegado pasa por `sudo` (`cat`, `stat`, `find`, `cp`, `mkdir`, `rm`, `mv`).
+- Al guardar, el contenido se sube por SFTP a un temporal en tu home y `sudo cp` lo vuelca sobre el destino, así el archivo conserva dueño y permisos.
+- Se intenta primero `sudo -n` (sin contraseña, `NOPASSWD`). Si sudo pide contraseña, se solicita una vez y se recuerda en memoria; `sshExplorer.auth.saveSecrets` decide si se guarda en el almacén de secretos.
+- Requisitos en el servidor: `sudo` y GNU coreutils/findutils (Debian, Raspberry Pi OS, Ubuntu, Fedora, Arch…). `sshExplorer.sudo.command` permite usar otro binario compatible con `-n`, `-S`, `-p` y `--`.
+
+Para no teclear la contraseña, en el servidor: `echo 'tuusuario ALL=(root) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/ssh-explorer`.
 
 ### Agente de credenciales
 
@@ -128,7 +140,7 @@ npm run package      # genera el .vsix
 
 ## English
 
-SSH Explorer mounts remote directories over SSH/SFTP as `ssh://<connection>/path` so VSCodium's native Explorer and editors work on them unchanged. It runs identically in the VSCodium Flatpak and native builds, honours the system SSH agent socket (`SSH_AUTH_SOCK`, `IdentityAgent`, Flatpak's forwarded socket, gnome-keyring, gpg-agent, 1Password), reads hosts from `~/.ssh/config` (including `Include` and `ProxyJump`), verifies host keys against `known_hosts` with a trust-on-first-use dialog, writes files atomically preserving permissions, and reconnects automatically with exponential backoff while pending operations wait for the new channel. Install the `.vsix` from the [latest release](https://github.com/43fdfdg45454/ssh-explorer/releases/latest) with `codium --install-extension` or `flatpak run com.vscodium.codium --install-extension`. If no agent socket is reachable inside the sandbox, run `flatpak override --user --socket=ssh-auth com.vscodium.codium` and restart VSCodium. Known limits: no workspace search, Git or terminal over `ssh://` folders; no `ProxyCommand`.
+SSH Explorer mounts remote directories over SSH/SFTP as `ssh://<connection>/path` so VSCodium's native Explorer and editors work on them unchanged. It runs identically in the VSCodium Flatpak and native builds, honours the system SSH agent socket (`SSH_AUTH_SOCK`, `IdentityAgent`, Flatpak's forwarded socket, gnome-keyring, gpg-agent, 1Password), reads hosts from `~/.ssh/config` (including `Include` and `ProxyJump`), verifies host keys against `known_hosts` with a trust-on-first-use dialog, writes files atomically preserving permissions, can retry operations denied by the server as root through `sudo` on an exec channel (per-connection `sudo: true`), and reconnects automatically with exponential backoff while pending operations wait for the new channel. Install the `.vsix` from the [latest release](https://github.com/43fdfdg45454/ssh-explorer/releases/latest) with `codium --install-extension` or `flatpak run com.vscodium.codium --install-extension`. If no agent socket is reachable inside the sandbox, run `flatpak override --user --socket=ssh-auth com.vscodium.codium` and restart VSCodium. Known limits: no workspace search, Git or terminal over `ssh://` folders; no `ProxyCommand`.
 
 ## Licencia
 

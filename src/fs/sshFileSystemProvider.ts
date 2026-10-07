@@ -2,9 +2,12 @@ import type { SFTPWrapper, Stats } from 'ssh2';
 import * as vscode from 'vscode';
 import type { ConnectionManager } from '../ssh/connectionManager';
 import type { Connection } from '../ssh/connection';
+import { CancelledError } from '../ssh/errors';
+import { SudoError, type SudoRunner } from '../ssh/sudo';
 import { Logger, errorMessage } from '../util/logger';
 import { toFileSystemError } from './errors';
 import * as ops from './sftpOps';
+import * as sudoOps from './sudoOps';
 import { buildSshUri, parseSshUri, remoteBasename, remoteDirname, remoteJoin } from './uri';
 import { PollingWatcher } from './watcher';
 
@@ -49,9 +52,24 @@ function toFileStat(st: Stats, linkTarget?: Stats): vscode.FileStat {
   };
 }
 
+function toFileStatFromRemote(st: sudoOps.RemoteStat, linkTarget?: sudoOps.RemoteStat): vscode.FileStat {
+  const base = linkTarget ?? st;
+  let type = typeFromMode(base.mode);
+  if (linkTarget || typeFromMode(st.mode) === vscode.FileType.SymbolicLink) {
+    type |= vscode.FileType.SymbolicLink;
+  }
+  return { type, ctime: base.mtime * 1000, mtime: base.mtime * 1000, size: base.size };
+}
+
+function isPermissionDenied(err: unknown): boolean {
+  return err instanceof vscode.FileSystemError && err.code === 'NoPermissions';
+}
+
 /**
  * Exposes remote directories as `ssh://<connection>/path` so the built-in
- * Explorer, editors and most extensions work on them unchanged.
+ * Explorer, editors and most extensions work on them unchanged. Operations run
+ * over SFTP as the login user; when a profile enables `sudo`, operations that
+ * SFTP refuses with Permission denied are retried as root through sudo.
  */
 export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.Disposable {
   private readonly changeEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
@@ -106,6 +124,30 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
     }
   }
 
+  /** Runs the SFTP implementation and, on Permission denied with sudo enabled, the root implementation. */
+  private async privileged<T>(
+    uri: vscode.Uri,
+    viaSftp: () => Promise<T>,
+    viaSudo: (sudo: SudoRunner, conn: Connection, path: string) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await viaSftp();
+    } catch (err) {
+      const { conn, path } = this.connection(uri);
+      if (!conn.profile.sudo || !isPermissionDenied(err)) throw err;
+      log.debug(`${uri.toString()}: permission denied over SFTP; retrying with sudo`);
+      try {
+        return await viaSudo(conn.sudo, conn, path);
+      } catch (sudoErr) {
+        if (sudoErr instanceof vscode.FileSystemError) throw sudoErr;
+        if (sudoErr instanceof SudoError || sudoErr instanceof CancelledError) {
+          throw vscode.FileSystemError.NoPermissions(`${uri.toString()} (sudo: ${sudoErr.message})`);
+        }
+        throw toFileSystemError(sudoErr, uri);
+      }
+    }
+  }
+
   // ---- vscode.FileSystemProvider ------------------------------------------
 
   watch(uri: vscode.Uri): vscode.Disposable {
@@ -123,58 +165,95 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
   }
 
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
-    return this.read(uri, async (sftp, path) => {
-      const st = await ops.lstat(sftp, path);
-      if (typeFromMode(st.mode) !== vscode.FileType.SymbolicLink) return toFileStat(st);
-      try {
-        return toFileStat(st, await ops.stat(sftp, path));
-      } catch {
-        return toFileStat(st); // dangling link
-      }
-    });
+    return this.privileged(
+      uri,
+      () =>
+        this.read(uri, async (sftp, path) => {
+          const st = await ops.lstat(sftp, path);
+          if (typeFromMode(st.mode) !== vscode.FileType.SymbolicLink) return toFileStat(st);
+          try {
+            return toFileStat(st, await ops.stat(sftp, path));
+          } catch {
+            return toFileStat(st); // dangling link
+          }
+        }),
+      async (sudo, _conn, path) => {
+        const st = await sudoOps.stat(sudo, uri, path);
+        if (typeFromMode(st.mode) !== vscode.FileType.SymbolicLink) return toFileStatFromRemote(st);
+        try {
+          return toFileStatFromRemote(st, await sudoOps.stat(sudo, uri, path, true));
+        } catch {
+          return toFileStatFromRemote(st);
+        }
+      },
+    );
   }
 
   async readDirectory(uri: vscode.Uri): Promise<[string, vscode.FileType][]> {
-    return this.read(uri, async (sftp, path) => {
-      const entries = await ops.readdir(sftp, path);
-      const result: [string, vscode.FileType][] = [];
-      for (const entry of entries) {
-        if (entry.filename === '.' || entry.filename === '..') continue;
-        let type = typeFromMode(entry.attrs.mode);
-        if (type === vscode.FileType.SymbolicLink) {
-          try {
-            const target = await ops.stat(sftp, remoteJoin(path, entry.filename));
-            type = typeFromMode(target.mode) | vscode.FileType.SymbolicLink;
-          } catch {
-            // dangling symlink: leave as SymbolicLink
+    return this.privileged(
+      uri,
+      () =>
+        this.read(uri, async (sftp, path) => {
+          const entries = await ops.readdir(sftp, path);
+          const result: [string, vscode.FileType][] = [];
+          for (const entry of entries) {
+            if (entry.filename === '.' || entry.filename === '..') continue;
+            let type = typeFromMode(entry.attrs.mode);
+            if (type === vscode.FileType.SymbolicLink) {
+              try {
+                const target = await ops.stat(sftp, remoteJoin(path, entry.filename));
+                type = typeFromMode(target.mode) | vscode.FileType.SymbolicLink;
+              } catch {
+                // dangling symlink: leave as SymbolicLink
+              }
+            }
+            result.push([entry.filename, type]);
           }
-        }
-        result.push([entry.filename, type]);
-      }
-      return result;
-    });
+          return result;
+        }),
+      (sudo, _conn, path) => sudoOps.readdir(sudo, uri, path),
+    );
   }
 
   async createDirectory(uri: vscode.Uri): Promise<void> {
-    await this.write(
+    await this.privileged(
       uri,
-      async (sftp, path) => {
-        if (await ops.existsStat(sftp, path)) throw vscode.FileSystemError.FileExists(uri);
-        await ops.mkdir(sftp, path);
+      () =>
+        this.write(
+          uri,
+          async (sftp, path) => {
+            if (await ops.existsStat(sftp, path)) throw vscode.FileSystemError.FileExists(uri);
+            await ops.mkdir(sftp, path);
+          },
+          'exists',
+        ),
+      async (sudo, _conn, path) => {
+        if (await sudoOps.exists(sudo, uri, path)) throw vscode.FileSystemError.FileExists(uri);
+        await sudoOps.mkdir(sudo, uri, path);
       },
-      'exists',
     );
     this.fire(vscode.FileChangeType.Created, uri, true);
   }
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
-    return this.read(uri, async (sftp, path) => {
-      const st = await ops.stat(sftp, path);
-      if (typeFromMode(st.mode) === vscode.FileType.Directory) {
-        throw vscode.FileSystemError.FileIsADirectory(uri);
-      }
-      return new Uint8Array(await ops.readFile(sftp, path));
-    });
+    return this.privileged(
+      uri,
+      () =>
+        this.read(uri, async (sftp, path) => {
+          const st = await ops.stat(sftp, path);
+          if (typeFromMode(st.mode) === vscode.FileType.Directory) {
+            throw vscode.FileSystemError.FileIsADirectory(uri);
+          }
+          return new Uint8Array(await ops.readFile(sftp, path));
+        }),
+      async (sudo, _conn, path) => {
+        const st = await sudoOps.stat(sudo, uri, path, true);
+        if (typeFromMode(st.mode) === vscode.FileType.Directory) {
+          throw vscode.FileSystemError.FileIsADirectory(uri);
+        }
+        return new Uint8Array(await sudoOps.readFile(sudo, uri, path));
+      },
+    );
   }
 
   async writeFile(
@@ -184,30 +263,70 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
   ): Promise<void> {
     const data = Buffer.from(content.buffer, content.byteOffset, content.byteLength);
     let created = false;
-    await this.write(uri, async (sftp, path) => {
-      const existing = await ops.existsStat(sftp, path);
-      if (existing && typeFromMode(existing.mode) === vscode.FileType.Directory) {
-        throw vscode.FileSystemError.FileIsADirectory(uri);
-      }
-      if (!existing && !options.create) throw vscode.FileSystemError.FileNotFound(uri);
-      if (existing && !options.overwrite) throw vscode.FileSystemError.FileExists(uri);
-      if (!existing) {
-        const parent = await ops.existsStat(sftp, remoteDirname(path));
-        if (!parent) {
-          throw vscode.FileSystemError.FileNotFound(buildSshUri(uri.authority, remoteDirname(path)));
+    await this.privileged(
+      uri,
+      () =>
+        this.write(uri, async (sftp, path) => {
+          const existing = await ops.existsStat(sftp, path);
+          if (existing && typeFromMode(existing.mode) === vscode.FileType.Directory) {
+            throw vscode.FileSystemError.FileIsADirectory(uri);
+          }
+          if (!existing && !options.create) throw vscode.FileSystemError.FileNotFound(uri);
+          if (existing && !options.overwrite) throw vscode.FileSystemError.FileExists(uri);
+          if (!existing) {
+            const parent = await ops.existsStat(sftp, remoteDirname(path));
+            if (!parent) {
+              throw vscode.FileSystemError.FileNotFound(buildSshUri(uri.authority, remoteDirname(path)));
+            }
+            created = true;
+          }
+          const mode = existing ? existing.mode & 0o7777 : undefined;
+          const atomic = this.settings.atomicWrites();
+          const canAtomic = atomic === 'always' || (atomic === 'auto' && ops.supportsPosixRename(sftp));
+          if (existing && canAtomic) {
+            await this.writeAtomically(sftp, path, data, mode);
+          } else {
+            await ops.writeFile(sftp, path, data, mode);
+          }
+        }),
+      async (sudo, conn, path) => {
+        const existing = await sudoOps.exists(sudo, uri, path);
+        if (existing && typeFromMode(existing.mode) === vscode.FileType.Directory) {
+          throw vscode.FileSystemError.FileIsADirectory(uri);
         }
-        created = true;
-      }
-      const mode = existing ? existing.mode & 0o7777 : undefined;
-      const atomic = this.settings.atomicWrites();
-      const canAtomic = atomic === 'always' || (atomic === 'auto' && ops.supportsPosixRename(sftp));
-      if (existing && canAtomic) {
-        await this.writeAtomically(sftp, path, data, mode);
-      } else {
-        await ops.writeFile(sftp, path, data, mode);
-      }
-    });
+        if (!existing && !options.create) throw vscode.FileSystemError.FileNotFound(uri);
+        if (existing && !options.overwrite) throw vscode.FileSystemError.FileExists(uri);
+        if (!existing) {
+          const parent = await sudoOps.exists(sudo, uri, remoteDirname(path));
+          if (!parent) {
+            throw vscode.FileSystemError.FileNotFound(buildSshUri(uri.authority, remoteDirname(path)));
+          }
+          created = true;
+        }
+        // Upload as the login user to a private temp file, then let root copy it over the target
+        // (cp keeps the target's owner and permissions).
+        const temp = await this.uploadTemp(conn, uri, data);
+        try {
+          await sudoOps.installFile(sudo, uri, temp, path);
+        } finally {
+          await conn.withSftp((sftp) => ops.unlink(sftp, temp)).catch(() => undefined);
+        }
+      },
+    );
     this.fire(created ? vscode.FileChangeType.Created : vscode.FileChangeType.Changed, uri, created);
+  }
+
+  private async uploadTemp(conn: Connection, uri: vscode.Uri, data: Buffer): Promise<string> {
+    try {
+      return await conn.withSftp(async (sftp) => {
+        const home = await ops.realpath(sftp, '.');
+        const temp = remoteJoin(home, `.ssh-explorer-${process.pid}-${Date.now().toString(36)}.tmp`);
+        await ops.writeFile(sftp, temp, data, 0o600);
+        return temp;
+      });
+    } catch (err) {
+      throw toFileSystemError(err, uri);
+    }
   }
 
   /** Writes to a sibling temp file, then renames it over the target so readers never see a partial file. */
@@ -239,18 +358,32 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
   }
 
   async delete(uri: vscode.Uri, options: { recursive: boolean }): Promise<void> {
-    await this.write(
+    await this.privileged(
       uri,
-      async (sftp, path) => {
-        const st = await ops.lstat(sftp, path);
-        if (typeFromMode(st.mode) === vscode.FileType.Directory) {
-          if (options.recursive) await this.deleteTree(sftp, path);
-          else await ops.rmdir(sftp, path);
-        } else {
-          await ops.unlink(sftp, path);
-        }
+      () =>
+        this.write(
+          uri,
+          async (sftp, path) => {
+            const st = await ops.lstat(sftp, path);
+            if (typeFromMode(st.mode) === vscode.FileType.Directory) {
+              if (options.recursive) await this.deleteTree(sftp, path);
+              else await ops.rmdir(sftp, path);
+            } else {
+              await ops.unlink(sftp, path);
+            }
+          },
+          'notEmpty',
+        ),
+      async (sudo, _conn, path) => {
+        const st = await sudoOps.stat(sudo, uri, path);
+        await sudoOps.remove(
+          sudo,
+          uri,
+          path,
+          options.recursive,
+          typeFromMode(st.mode) === vscode.FileType.Directory,
+        );
       },
-      'notEmpty',
     );
     this.fire(vscode.FileChangeType.Deleted, uri, true);
   }
@@ -271,22 +404,40 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
       throw new vscode.FileSystemError('Cannot rename across SSH connections; copy instead.');
     }
     const target = parseSshUri(newUri).path;
-    await this.write(
+    await this.privileged(
       oldUri,
-      async (sftp, path) => {
-        const existing = await ops.existsStat(sftp, target);
+      () =>
+        this.write(
+          oldUri,
+          async (sftp, path) => {
+            const existing = await ops.existsStat(sftp, target);
+            if (existing) {
+              if (!options.overwrite) throw vscode.FileSystemError.FileExists(newUri);
+              if (
+                ops.supportsPosixRename(sftp) &&
+                typeFromMode(existing.mode) !== vscode.FileType.Directory
+              ) {
+                await ops.posixRename(sftp, path, target);
+                return;
+              }
+              if (typeFromMode(existing.mode) === vscode.FileType.Directory) {
+                await this.deleteTree(sftp, target);
+              } else await ops.unlink(sftp, target);
+            }
+            await ops.rename(sftp, path, target);
+          },
+          'exists',
+        ),
+      async (sudo, _conn, path) => {
+        const existing = await sudoOps.exists(sudo, newUri, target);
         if (existing) {
           if (!options.overwrite) throw vscode.FileSystemError.FileExists(newUri);
-          if (ops.supportsPosixRename(sftp) && typeFromMode(existing.mode) !== vscode.FileType.Directory) {
-            await ops.posixRename(sftp, path, target);
-            return;
+          if (typeFromMode(existing.mode) === vscode.FileType.Directory) {
+            await sudoOps.remove(sudo, newUri, target, true, true);
           }
-          if (typeFromMode(existing.mode) === vscode.FileType.Directory) await this.deleteTree(sftp, target);
-          else await ops.unlink(sftp, target);
         }
-        await ops.rename(sftp, path, target);
+        await sudoOps.rename(sudo, oldUri, path, target);
       },
-      'exists',
     );
     this.changeEmitter.fire([
       { type: vscode.FileChangeType.Deleted, uri: oldUri },
@@ -304,18 +455,37 @@ export class SshFileSystemProvider implements vscode.FileSystemProvider, vscode.
       throw new vscode.FileSystemError('Copying between different SSH connections is not supported.');
     }
     const target = parseSshUri(destination).path;
-    await this.write(
+    await this.privileged(
       source,
-      async (sftp, path) => {
-        const existing = await ops.existsStat(sftp, target);
+      () =>
+        this.write(
+          source,
+          async (sftp, path) => {
+            const existing = await ops.existsStat(sftp, target);
+            if (existing) {
+              if (!options.overwrite) throw vscode.FileSystemError.FileExists(destination);
+              if (typeFromMode(existing.mode) === vscode.FileType.Directory) {
+                await this.deleteTree(sftp, target);
+              } else await ops.unlink(sftp, target);
+            }
+            await this.copyTree(sftp, path, target);
+          },
+          'exists',
+        ),
+      async (sudo, _conn, path) => {
+        const existing = await sudoOps.exists(sudo, destination, target);
         if (existing) {
           if (!options.overwrite) throw vscode.FileSystemError.FileExists(destination);
-          if (typeFromMode(existing.mode) === vscode.FileType.Directory) await this.deleteTree(sftp, target);
-          else await ops.unlink(sftp, target);
+          await sudoOps.remove(
+            sudo,
+            destination,
+            target,
+            true,
+            typeFromMode(existing.mode) === vscode.FileType.Directory,
+          );
         }
-        await this.copyTree(sftp, path, target);
+        await sudoOps.copy(sudo, source, path, target);
       },
-      'exists',
     );
     this.fire(vscode.FileChangeType.Created, destination, true);
   }

@@ -16,6 +16,7 @@ export const Commands = {
   openFolderInWorkspace: 'sshExplorer.openFolderInWorkspace',
   openFile: 'sshExplorer.openFile',
   copyUri: 'sshExplorer.copyUri',
+  toggleSudo: 'sshExplorer.toggleSudo',
   diagnoseAgent: 'sshExplorer.diagnoseAgent',
   showLogs: 'sshExplorer.showLogs',
   clearSavedSecrets: 'sshExplorer.clearSavedSecrets',

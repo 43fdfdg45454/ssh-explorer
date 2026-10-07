@@ -3,6 +3,7 @@
  * Lets integration tests exercise the real ssh2 client stack (auth, host keys,
  * reconnection) in milliseconds without Docker or a system sshd.
  */
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import type * as net from 'node:net';
@@ -22,6 +23,15 @@ export interface SftpTestServerOptions {
   /** When set, keyboard-interactive asks one question and expects this answer. */
   keyboardAnswer?: string;
   hostKey?: TestKeyPair;
+  /**
+   * Remote paths (relative to the temp root, e.g. '/protected') where every
+   * mutating SFTP request fails with PERMISSION_DENIED and reads of files
+   * directly inside fail too. Lets tests exercise privilege fallbacks without
+   * relying on real file-system permissions (tests may run as root).
+   */
+  readOnlyPaths?: string[];
+  /** Extra environment for exec'd commands (e.g. a fake sudo on PATH). */
+  execEnv?: NodeJS.ProcessEnv;
 }
 
 interface OpenFile {
@@ -79,6 +89,8 @@ export class SftpTestServer {
   authCount = 0;
   /** Number of SFTP channels ever opened. */
   sftpOpenCount = 0;
+  /** Commands received over exec channels, in order. */
+  execCommands: string[] = [];
   acceptConnections = true;
 
   constructor(private readonly options: SftpTestServerOptions = {}) {
@@ -185,6 +197,29 @@ export class SftpTestServer {
       this.authCount++;
       client.on('session', (accept) => {
         const session = accept();
+        session.on('exec', (acceptExec, _reject, info) => {
+          const channel = acceptExec();
+          this.execCommands.push(info.command);
+          // Commands quote every path ('/x'); map remote absolute paths onto the temp root.
+          const command = info.command.replace(/'\//g, `'${this.root}/`);
+          const child = spawn('sh', ['-c', command], {
+            cwd: this.root,
+            env: { ...process.env, ...this.options.execEnv, LC_ALL: 'C' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          channel.pipe(child.stdin);
+          child.stdout.pipe(channel, { end: false });
+          child.stderr.pipe(channel.stderr, { end: false });
+          child.on('close', (code, signal) => {
+            if (code === null) channel.exit(signal ?? 'SIGTERM');
+            else channel.exit(code);
+            channel.end();
+          });
+          child.on('error', () => {
+            channel.exit(127);
+            channel.end();
+          });
+        });
         session.on('sftp', (acceptSftp) => {
           const sftp = acceptSftp();
           this.sftpOpenCount++;
@@ -210,6 +245,12 @@ export class SftpTestServer {
     const lookup = (handle: Buffer) => handles.get(handle.readUInt32BE(0));
     const fail = (reqId: number, err: unknown) => sftp.status(reqId, statusFor(err), (err as Error)?.message);
     const ok = (reqId: number) => sftp.status(reqId, STATUS_CODE.OK);
+    const readOnly = (this.options.readOnlyPaths ?? []).map((p) => path.posix.normalize(p));
+    const isProtected = (remote: string): boolean => {
+      const norm = path.posix.normalize(remote.startsWith('/') ? remote : '/' + remote);
+      return readOnly.some((ro) => norm === ro || norm.startsWith(ro + '/'));
+    };
+    const denied = (reqId: number) => sftp.status(reqId, STATUS_CODE.PERMISSION_DENIED, 'Permission denied');
 
     sftp.on('REALPATH', (reqId, p) => {
       const abs = path.posix.normalize(p === '.' || p === '' ? '/' : p.startsWith('/') ? p : '/' + p);
@@ -268,6 +309,7 @@ export class SftpTestServer {
     sftp.on('OPEN', (reqId, filename, flags, attrs) => {
       const flagStr = flagsToString(flags);
       if (!flagStr) return sftp.status(reqId, STATUS_CODE.OP_UNSUPPORTED);
+      if (isProtected(filename) && (flagStr !== 'r' || /secret/.test(filename))) return denied(reqId);
       fsp
         .open(this.local(filename), flagStr, attrs.mode || 0o644)
         .then((fd) => sftp.handle(reqId, newHandle({ kind: 'file', fd })))
@@ -308,24 +350,28 @@ export class SftpTestServer {
       }
     });
     sftp.on('MKDIR', (reqId, p, attrs) => {
+      if (isProtected(p)) return denied(reqId);
       fsp
         .mkdir(this.local(p), { mode: attrs.mode || 0o755 })
         .then(() => ok(reqId))
         .catch((err: unknown) => fail(reqId, err));
     });
     sftp.on('RMDIR', (reqId, p) => {
+      if (isProtected(p)) return denied(reqId);
       fsp
         .rmdir(this.local(p))
         .then(() => ok(reqId))
         .catch((err: unknown) => fail(reqId, err));
     });
     sftp.on('REMOVE', (reqId, p) => {
+      if (isProtected(p)) return denied(reqId);
       fsp
         .unlink(this.local(p))
         .then(() => ok(reqId))
         .catch((err: unknown) => fail(reqId, err));
     });
     sftp.on('RENAME', (reqId, oldPath, newPath) => {
+      if (isProtected(oldPath) || isProtected(newPath)) return denied(reqId);
       // OpenSSH semantics: plain RENAME refuses to overwrite.
       fsp.access(this.local(newPath)).then(
         () => sftp.status(reqId, STATUS_CODE.FAILURE, 'target exists'),
@@ -337,6 +383,7 @@ export class SftpTestServer {
       );
     });
     sftp.on('SETSTAT', (reqId, p, attrs) => {
+      if (isProtected(p)) return denied(reqId);
       this.applyAttrs(this.local(p), attrs)
         .then(() => ok(reqId))
         .catch((err: unknown) => fail(reqId, err));
@@ -369,6 +416,7 @@ export class SftpTestServer {
         const oldPath = extData.subarray(4, 4 + len1).toString('utf8');
         const len2 = extData.readUInt32BE(4 + len1);
         const newPath = extData.subarray(8 + len1, 8 + len1 + len2).toString('utf8');
+        if (isProtected(oldPath) || isProtected(newPath)) return denied(reqId);
         fsp
           .rename(this.local(oldPath), this.local(newPath))
           .then(() => ok(reqId))

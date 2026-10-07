@@ -180,6 +180,33 @@ describe('Connection', () => {
     expect(server.authCount).toBe(1);
   });
 
+  it('runs remote commands over exec channels with stdin, stdout, stderr and exit code', async () => {
+    const keyFile = writeTempKey(clientKey.privatePem);
+    const h = createHarness(server, { identityFiles: [keyFile], hostKeyPolicy: 'accept-new' });
+    const conn = new Connection(h.profile, h.deps);
+    cleanups.push(() => conn.dispose());
+
+    const echo = await conn.exec("printf 'out:%s' \"$(cat)\"; echo 'warn' >&2; exit 3", {
+      stdin: Buffer.from('ping'),
+    });
+    expect(echo.stdout.toString()).toBe('out:ping');
+    expect(echo.stderr.trim()).toBe('warn');
+    expect(echo.code).toBe(3);
+
+    const binary = Buffer.from([0, 1, 2, 255, 10, 13, 0]);
+    const roundTrip = await conn.exec('cat', { stdin: binary });
+    expect(roundTrip.stdout.equals(binary)).toBe(true);
+    expect(roundTrip.code).toBe(0);
+    expect(server.execCommands).toHaveLength(2);
+
+    // Exec issued during an outage waits for the reconnection.
+    server.kill();
+    await waitForState(conn, 'reconnecting');
+    const pending = conn.exec('echo back');
+    await waitForState(conn, 'connected');
+    expect((await pending).stdout.toString().trim()).toBe('back');
+  });
+
   it('manual disconnect stops auto-reconnect', async () => {
     const keyFile = writeTempKey(clientKey.privatePem);
     const h = createHarness(server, { identityFiles: [keyFile], hostKeyPolicy: 'accept-new' });

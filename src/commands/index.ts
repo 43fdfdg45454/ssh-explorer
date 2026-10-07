@@ -192,6 +192,27 @@ export function registerCommands(context: vscode.ExtensionContext, deps: Command
     void vscode.window.setStatusBarMessage(`Copied ${uri.toString()}`, 3000);
   });
 
+  register(Commands.toggleSudo, async (target) => {
+    const profile = await resolveProfile(target as Target, 'Toggle sudo mode for…');
+    if (!profile) return;
+    const raw = settings.rawConnections();
+    const idx = raw.findIndex((c) => c.name.toLowerCase() === profile.name.toLowerCase());
+    const enable = !profile.sudo;
+    if (idx >= 0) {
+      raw[idx] = { ...raw[idx]!, sudo: enable };
+    } else {
+      // ssh_config host: create a saved profile with the same name so the flag has somewhere to live.
+      raw.push({ name: profile.name, host: profile.host, sudo: enable });
+    }
+    await settings.saveConnections(raw);
+    await manager.refreshProfiles();
+    void vscode.window.showInformationMessage(
+      enable
+        ? `SSH Explorer: sudo mode enabled for ${profile.name}. Operations denied by the server are retried as root.`
+        : `SSH Explorer: sudo mode disabled for ${profile.name}.`,
+    );
+  });
+
   register(Commands.addConnection, async () => {
     const created = await editProfileInteractively(settings);
     if (!created) return;

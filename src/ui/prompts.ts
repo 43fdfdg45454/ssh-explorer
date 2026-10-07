@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import type { AuthPrompter } from '../ssh/auth';
 import type { HostKeyPrompter, UnknownHostDecision } from '../ssh/hostVerifier';
 import { hostPattern } from '../ssh/knownHosts';
+import type { SudoPrompter } from '../ssh/sudo';
 import type { ResolvedHost } from '../ssh/types';
 
 function label(host: ResolvedHost): string {
@@ -79,5 +80,29 @@ export class VsCodeHostKeyPrompter implements HostKeyPrompter {
     if (choice === 'Trust and save') return 'save';
     if (choice === 'Trust once') return 'once';
     return 'reject';
+  }
+}
+
+/** Password prompt for sudo on the remote host. */
+export class VsCodeSudoPrompter implements SudoPrompter {
+  async askSudoPassword(host: ResolvedHost, attempt: number): Promise<string | undefined> {
+    return vscode.window.showInputBox({
+      title: `SSH Explorer: ${host.profile.name}`,
+      prompt:
+        attempt > 1
+          ? `sudo rejected the password. [sudo] password for ${label(host)}`
+          : `[sudo] password for ${label(host)} (needed to write files owned by root)`,
+      password: true,
+      ignoreFocusOut: true,
+    });
+  }
+
+  async askSaveSudoPassword(host: ResolvedHost): Promise<boolean> {
+    const choice = await vscode.window.showInformationMessage(
+      `Save the sudo password for ${label(host)} in the secret storage of this editor?`,
+      'Save',
+      'Not now',
+    );
+    return choice === 'Save';
   }
 }

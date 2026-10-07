@@ -18,6 +18,8 @@ export interface ConnectionProfile {
   /** `[user@]host[:port]` or an ssh_config alias; comma-separated for multiple hops. */
   proxyJump?: string;
   keepaliveInterval?: number;
+  /** Retry operations that SFTP refuses with Permission denied as root via sudo over exec. */
+  sudo?: boolean;
   source: ProfileSource;
 }
 

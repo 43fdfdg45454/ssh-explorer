@@ -1,0 +1,7 @@
+**
+!dist/extension.js
+!resources/**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE

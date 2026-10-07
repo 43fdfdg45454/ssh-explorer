@@ -1,0 +1,515 @@
+{
+  "name": "ssh-explorer",
+  "displayName": "SSH Explorer",
+  "description": "Browse and edit remote directories over SSH/SFTP. Works in VSCodium (Flatpak and native) and honours the system SSH agent socket.",
+  "version": "0.0.0",
+  "publisher": "43fdfdg45454",
+  "license": "MIT",
+  "author": "Ivan Monges",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/43fdfdg45454/ssh-explorer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/43fdfdg45454/ssh-explorer/issues"
+  },
+  "homepage": "https://github.com/43fdfdg45454/ssh-explorer#readme",
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=22"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ssh",
+    "sftp",
+    "remote",
+    "explorer",
+    "vscodium",
+    "flatpak"
+  ],
+  "icon": "resources/icon.png",
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "activationEvents": [
+    "onFileSystem:ssh"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sshExplorer",
+          "title": "SSH Explorer",
+          "icon": "resources/icons/ssh-explorer.svg"
+        }
+      ]
+    },
+    "views": {
+      "sshExplorer": [
+        {
+          "id": "sshExplorer.connections",
+          "name": "Connections",
+          "contextualTitle": "SSH Explorer",
+          "icon": "resources/icons/ssh-explorer.svg"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "sshExplorer.connections",
+        "contents": "No SSH connections yet.\n[Add Connection](command:sshExplorer.addConnection)\nHosts defined in ~/.ssh/config appear here automatically.\n[Diagnose SSH Agent](command:sshExplorer.diagnoseAgent)"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sshExplorer.refresh",
+        "title": "Refresh Connections",
+        "category": "SSH Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sshExplorer.addConnection",
+        "title": "Add Connection…",
+        "category": "SSH Explorer",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sshExplorer.editConnection",
+        "title": "Edit Connection",
+        "category": "SSH Explorer"
+      },
+      {
+        "command": "sshExplorer.removeConnection",
+        "title": "Remove Connection",
+        "category": "SSH Explorer"
+      },
+      {
+        "command": "sshExplorer.connect",
+        "title": "Connect",
+        "category": "SSH Explorer",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "sshExplorer.disconnect",
+        "title": "Disconnect",
+        "category": "SSH Explorer",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "sshExplorer.reconnect",
+        "title": "Reconnect",
+        "category": "SSH Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sshExplorer.browse",
+        "title": "Browse Remote Files…",
+        "category": "SSH Explorer",
+        "icon": "$(search)"
+      },
+      {
+        "command": "sshExplorer.openRootInWorkspace",
+        "title": "Add Root Folder to Workspace",
+        "category": "SSH Explorer",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "sshExplorer.openFolderInWorkspace",
+        "title": "Add Remote Folder to Workspace…",
+        "category": "SSH Explorer"
+      },
+      {
+        "command": "sshExplorer.openFile",
+        "title": "Open Remote File…",
+        "category": "SSH Explorer",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "sshExplorer.copyUri",
+        "title": "Copy ssh:// URI",
+        "category": "SSH Explorer"
+      },
+      {
+        "command": "sshExplorer.diagnoseAgent",
+        "title": "Diagnose SSH Agent",
+        "category": "SSH Explorer"
+      },
+      {
+        "command": "sshExplorer.showLogs",
+        "title": "Show Logs",
+        "category": "SSH Explorer",
+        "icon": "$(output)"
+      },
+      {
+        "command": "sshExplorer.clearSavedSecrets",
+        "title": "Forget Saved Passwords and Passphrases",
+        "category": "SSH Explorer"
+      },
+      {
+        "command": "sshExplorer.statusBarMenu",
+        "title": "Connection Actions…",
+        "category": "SSH Explorer"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sshExplorer.addConnection",
+          "when": "view == sshExplorer.connections",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sshExplorer.refresh",
+          "when": "view == sshExplorer.connections",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sshExplorer.showLogs",
+          "when": "view == sshExplorer.connections",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sshExplorer.diagnoseAgent",
+          "when": "view == sshExplorer.connections",
+          "group": "1_tools@1"
+        },
+        {
+          "command": "sshExplorer.clearSavedSecrets",
+          "when": "view == sshExplorer.connections",
+          "group": "1_tools@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sshExplorer.connect",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\.(disconnected|failed)\\./",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshExplorer.disconnect",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\.(connected|connecting|reconnecting)\\./",
+          "group": "inline@1"
+        },
+        {
+          "command": "sshExplorer.openRootInWorkspace",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "sshExplorer.browse",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "1_open@1"
+        },
+        {
+          "command": "sshExplorer.openRootInWorkspace",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "1_open@2"
+        },
+        {
+          "command": "sshExplorer.openFolderInWorkspace",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "1_open@3"
+        },
+        {
+          "command": "sshExplorer.openFile",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "1_open@4"
+        },
+        {
+          "command": "sshExplorer.connect",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\.(disconnected|failed)\\./",
+          "group": "2_conn@1"
+        },
+        {
+          "command": "sshExplorer.reconnect",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "2_conn@2"
+        },
+        {
+          "command": "sshExplorer.disconnect",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\.(connected|connecting|reconnecting|failed)\\./",
+          "group": "2_conn@3"
+        },
+        {
+          "command": "sshExplorer.editConnection",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "3_edit@1"
+        },
+        {
+          "command": "sshExplorer.removeConnection",
+          "when": "view == sshExplorer.connections && viewItem =~ /\\.settings$/",
+          "group": "3_edit@2"
+        },
+        {
+          "command": "sshExplorer.copyUri",
+          "when": "view == sshExplorer.connections && viewItem =~ /^connection\\./",
+          "group": "3_edit@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sshExplorer.statusBarMenu",
+          "when": "false"
+        },
+        {
+          "command": "sshExplorer.copyUri",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SSH Explorer",
+      "properties": {
+        "sshExplorer.connections": {
+          "type": "array",
+          "default": [],
+          "scope": "application",
+          "markdownDescription": "Saved connections. Hosts from `~/.ssh/config` are added automatically and do not need to be listed here.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "host"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+                "description": "Identifier used in ssh://<name>/ URIs."
+              },
+              "host": {
+                "type": "string",
+                "description": "Hostname, IP address or ~/.ssh/config alias."
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "Port (default 22 or the ssh_config value)."
+              },
+              "user": {
+                "type": "string",
+                "description": "User name (default: ssh_config value or the local user)."
+              },
+              "root": {
+                "type": "string",
+                "description": "Initial remote directory. Empty = remote home directory."
+              },
+              "identityFile": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Private key files to try (tilde allowed)."
+              },
+              "agent": {
+                "type": [
+                  "string",
+                  "boolean"
+                ],
+                "description": "Agent socket path. false disables agent authentication for this host."
+              },
+              "agentForward": {
+                "type": "boolean",
+                "default": false,
+                "description": "Forward the agent to the remote host (ForwardAgent)."
+              },
+              "proxyJump": {
+                "type": "string",
+                "description": "Jump host(s): [user@]host[:port], comma-separated, or ssh_config aliases."
+              },
+              "keepaliveInterval": {
+                "type": "integer",
+                "description": "Keepalive interval in milliseconds for this host."
+              }
+            }
+          }
+        },
+        "sshExplorer.sshConfig.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read hosts and options from the OpenSSH client configuration."
+        },
+        "sshExplorer.sshConfig.path": {
+          "type": "string",
+          "default": "~/.ssh/config",
+          "description": "Path of the OpenSSH client configuration file."
+        },
+        "sshExplorer.knownHosts.path": {
+          "type": "string",
+          "default": "~/.ssh/known_hosts",
+          "description": "known_hosts file used to verify server keys."
+        },
+        "sshExplorer.knownHosts.writeTo": {
+          "type": "string",
+          "enum": [
+            "userKnownHosts",
+            "extension"
+          ],
+          "default": "userKnownHosts",
+          "enumDescriptions": [
+            "Append newly trusted keys to the known_hosts file above.",
+            "Keep newly trusted keys in a file private to this extension."
+          ]
+        },
+        "sshExplorer.knownHosts.hashNewEntries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Hash host names of newly saved entries (like HashKnownHosts yes)."
+        },
+        "sshExplorer.strictHostKeyChecking": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "accept-new",
+            "yes"
+          ],
+          "default": "ask",
+          "enumDescriptions": [
+            "Ask before trusting an unknown host key.",
+            "Trust unknown hosts automatically, but refuse changed keys.",
+            "Refuse any host not already in known_hosts."
+          ]
+        },
+        "sshExplorer.agent.socket": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Agent socket to prefer over `$SSH_AUTH_SOCK`. Leave empty to auto-detect (ssh_config IdentityAgent, SSH_AUTH_SOCK, well-known locations)."
+        },
+        "sshExplorer.agent.probePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "/run/flatpak/ssh-auth",
+            "${XDG_RUNTIME_DIR}/ssh-auth",
+            "${XDG_RUNTIME_DIR}/keyring/ssh",
+            "${XDG_RUNTIME_DIR}/gcr/ssh",
+            "${XDG_RUNTIME_DIR}/gnupg/S.gpg-agent.ssh",
+            "~/.1password/agent.sock"
+          ],
+          "description": "Socket locations probed when no agent is configured (Flatpak forward, gnome-keyring, gcr, gpg-agent, 1Password)."
+        },
+        "sshExplorer.auth.saveSecrets": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
+          "default": "ask",
+          "description": "Whether passwords and passphrases that worked are stored in the editor's secret storage."
+        },
+        "sshExplorer.keepaliveIntervalSeconds": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "description": "SSH keepalive interval. 0 disables keepalives (not recommended)."
+        },
+        "sshExplorer.connectTimeoutSeconds": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Time allowed for the SSH handshake."
+        },
+        "sshExplorer.reconnect.maxAttempts": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 0,
+          "description": "Automatic reconnection attempts after the transport drops before giving up."
+        },
+        "sshExplorer.reconnect.maxDelaySeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Upper bound of the exponential backoff between reconnection attempts."
+        },
+        "sshExplorer.operationTimeoutSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "How long a file operation waits for a (re)connection before failing."
+        },
+        "sshExplorer.maxConcurrentOps": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "description": "Maximum SFTP operations in flight per connection."
+        },
+        "sshExplorer.atomicWrites": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Write through a temporary file when the server supports atomic rename (OpenSSH).",
+            "Always write through a temporary file, deleting the target first if needed.",
+            "Write directly to the target file."
+          ]
+        },
+        "sshExplorer.watch.pollIntervalSeconds": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Poll open remote files for external changes every N seconds. 0 disables polling."
+        },
+        "sshExplorer.networkChangeDetection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Probe connections when local network interfaces change and reconnect immediately if they are dead."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "build:prod": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src test scripts esbuild.mjs eslint.config.mjs vitest.config.mts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:int": "vitest run --project integration",
+    "smoke": "node scripts/smoke-require.cjs",
+    "verify": "npm-run-all2 -p lint typecheck format:check -s test build:prod smoke",
+    "package": "vsce package --no-dependencies",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "ssh-config": "^5.3.0",
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "@types/ssh2": "^1.15.6",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "husky": "^9.1.7",
+    "npm-run-all2": "^8.0.4",
+    "prettier": "^3.0.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}

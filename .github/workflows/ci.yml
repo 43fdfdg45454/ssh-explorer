@@ -1,0 +1,71 @@
+# Single verification + packaging job. Release publishing happens in release.yml,
+# which reuses the .vsix built here so nothing is compiled twice.
+name: CI
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.editorconfig'
+      - '.vscode/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.editorconfig'
+      - '.vscode/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # GitVersion needs the full history and tags
+
+      - uses: gittools/actions/gitversion/setup@v4.7.0
+        with:
+          versionSpec: '6.8.x'
+          preferLatestVersion: false
+
+      - id: gitversion
+        uses: gittools/actions/gitversion/execute@v4.7.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci --prefer-offline --no-audit --no-fund
+
+      - run: npm run verify
+
+      - name: Stamp version and package
+        env:
+          VERSION: ${{ steps.gitversion.outputs.majorMinorPatch }}
+        run: |
+          npm version "$VERSION" --no-git-tag-version
+          npm run package
+          echo "$VERSION" > version.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vsix
+          path: |
+            *.vsix
+            version.txt
+          retention-days: 7
+          if-no-files-found: error
